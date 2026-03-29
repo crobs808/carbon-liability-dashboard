@@ -19,6 +19,7 @@ import {
 import { BaselineModal } from "@/components/dashboard/baseline-modal";
 import { Sparkline } from "@/components/dashboard/charts";
 import { CommandPalette } from "@/components/dashboard/command-palette";
+import { InsightModal, InsightModalData } from "@/components/dashboard/insight-modal";
 import { MethodologyModal } from "@/components/dashboard/methodology-modal";
 import { MetricModal } from "@/components/dashboard/metric-modal";
 import { ReportOffenderModal } from "@/components/dashboard/report-offender-modal";
@@ -41,6 +42,7 @@ import {
   severityToTone
 } from "@/lib/dashboard-data";
 import { MetricDefinition, OffenseCategory, OffenderRecord, ReportOffenderInput, WatchlistEntry } from "@/lib/dashboard-types";
+import { NewsSignalResponse } from "@/lib/news-signal-types";
 import { clamp, cn, formatDateTime, formatMetricValue, relativeTime, severityBadgeClass, severityLabel } from "@/lib/utils";
 
 const STORAGE_KEY = "cld:user-offenders:v1";
@@ -56,6 +58,30 @@ const excuseSamples = [
   "User reports urgency while omitting deadlines until revision cycle three.",
   "Blame transfer detected after initial instructions were contradicted in-line."
 ];
+
+const demandSensitive = new Set(["utc", "rpa", "nre", "mqr", "lmhe", "ghe", "bth", "bdc", "ande", "hsic"]);
+const courtesySensitive = new Set(["utc", "adr", "mbdr", "hsic", "clai", "rpa"]);
+const waterSensitive = new Set(["wtb", "ghe", "arci", "bdc", "sfp"]);
+const contextSensitive = new Set(["vrbs", "ici", "mqad", "rpa", "mbdr"]);
+
+const newsLevelClass: Record<NewsSignalResponse["level"], { marker: string; badge: string }> = {
+  green: {
+    marker: "text-ally",
+    badge: "border-ally/35 bg-ally/10 text-ally"
+  },
+  yellow: {
+    marker: "text-caution",
+    badge: "border-caution/35 bg-caution/10 text-caution"
+  },
+  orange: {
+    marker: "text-orange-300",
+    badge: "border-orange-400/35 bg-orange-400/10 text-orange-200"
+  },
+  red: {
+    marker: "text-alert",
+    badge: "border-alert/35 bg-alert/10 text-red-200"
+  }
+};
 
 export const DashboardApp = () => {
   const [seeded] = useState<OffenderRecord[]>(() => seededOffenders());
@@ -80,6 +106,14 @@ export const DashboardApp = () => {
   const [excuseIndex, setExcuseIndex] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [clock, setClock] = useState<Date>(() => new Date());
+  const [insightModal, setInsightModal] = useState<InsightModalData | null>(null);
+  const [demandIntensity, setDemandIntensity] = useState(56);
+  const [courtesyRate, setCourtesyRate] = useState(18);
+  const [waterDiversion, setWaterDiversion] = useState(63);
+  const [contextCompleteness, setContextCompleteness] = useState(34);
+  const [timelineScrub, setTimelineScrub] = useState(72);
+  const [newsSignal, setNewsSignal] = useState<NewsSignalResponse | null>(null);
+  const [newsSignalLoading, setNewsSignalLoading] = useState(true);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -100,15 +134,84 @@ export const DashboardApp = () => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(userOffenders));
   }, [userOffenders]);
 
+  useEffect(() => {
+    let active = true;
+
+    const fetchNewsSignal = async () => {
+      try {
+        const response = await fetch("/api/news-signal", { cache: "no-store" });
+        if (!response.ok) throw new Error("Failed to fetch news signal");
+
+        const payload = (await response.json()) as NewsSignalResponse;
+        if (!active) return;
+        setNewsSignal(payload);
+      } catch {
+        if (!active) return;
+      } finally {
+        if (active) setNewsSignalLoading(false);
+      }
+    };
+
+    fetchNewsSignal();
+    const interval = window.setInterval(fetchNewsSignal, 15 * 60 * 1000);
+
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const allOffenders = useMemo(
     () => [...userOffenders, ...seeded].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [seeded, userOffenders]
   );
 
-  const metrics = useMemo(
-    () => METRICS.map((metric) => (metric.id === "utc" ? { ...metric, value: liveCounter } : metric)),
-    [liveCounter]
-  );
+  const metrics = useMemo(() => {
+    const demandFactor = (demandIntensity - 50) / 50;
+    const courtesyFactor = (50 - courtesyRate) / 50;
+    const waterFactor = (waterDiversion - 50) / 50;
+    const contextFactor = (50 - contextCompleteness) / 50;
+    const timelineFactor = (timelineScrub - 50) / 50;
+
+    return METRICS.map((metric) => {
+      const baseValue = metric.id === "utc" ? liveCounter : metric.value;
+
+      let impact = 0;
+      if (demandSensitive.has(metric.id)) impact += demandFactor * 0.45;
+      if (courtesySensitive.has(metric.id)) impact += courtesyFactor * 0.38;
+      if (waterSensitive.has(metric.id)) impact += waterFactor * 0.34;
+      if (contextSensitive.has(metric.id)) impact += contextFactor * 0.36;
+
+      const signedImpact = metric.id === "sfp" || metric.id === "adr" ? -impact : impact;
+
+      const scaledValue = baseValue * (1 + signedImpact * 0.33);
+      let adjustedValue = scaledValue;
+
+      if (metric.unit === "%") adjustedValue = clamp(scaledValue, 0, 100);
+      if (metric.unit === "ratio") adjustedValue = clamp(scaledValue, 0.01, 99);
+      if (metric.unit === "index") adjustedValue = clamp(scaledValue, 0.1, 999);
+      if (metric.unit === "dB-eq") adjustedValue = clamp(scaledValue, 15, 145);
+      if (metric.unit === "tokens" || metric.unit === "events" || metric.unit === "tabs" || metric.unit === "cases") {
+        adjustedValue = clamp(scaledValue, 1, Number.MAX_SAFE_INTEGER);
+      }
+
+      const adjustedTrend = metric.trend.map((point, index, points) => {
+        const recencySpread = points.length > 1 ? index / (points.length - 1) - 0.5 : 0;
+        const timelineDrift = recencySpread * timelineFactor * 0.55;
+        const trendImpact = signedImpact * 0.65 + timelineDrift;
+        return Number(clamp(point * (1 + trendImpact), 0.1, 9999).toFixed(2));
+      });
+
+      const adjustedDelta = Number((metric.delta24h + signedImpact * 6.4 + timelineFactor * 1.8).toFixed(1));
+
+      return {
+        ...metric,
+        value: Number(adjustedValue.toFixed(2)),
+        trend: adjustedTrend,
+        delta24h: adjustedDelta
+      };
+    });
+  }, [contextCompleteness, courtesyRate, demandIntensity, liveCounter, timelineScrub, waterDiversion]);
 
   const selectedMetric = useMemo(
     () => metrics.find((metric) => metric.id === selectedMetricId) ?? null,
@@ -330,10 +433,25 @@ export const DashboardApp = () => {
     return `${row}   •   ${row}`;
   }, [filteredOffenders, topOffenders]);
 
+  const openInsight = useCallback((payload: InsightModalData) => {
+    setInsightModal(payload);
+  }, []);
+
+  const activeNewsSignal = newsSignal;
+  const newsStyle = activeNewsSignal ? newsLevelClass[activeNewsSignal.level] : newsLevelClass.yellow;
+
+  const resetScenarioControls = () => {
+    setDemandIntensity(56);
+    setCourtesyRate(18);
+    setWaterDiversion(63);
+    setContextCompleteness(34);
+    setTimelineScrub(72);
+  };
+
   return (
     <div className="min-h-screen overflow-x-clip bg-fog-radial px-3 pb-10 pt-4 text-ink sm:px-5 lg:px-6">
-      <header className="sticky top-2 z-40 overflow-hidden rounded-xl border border-ice/20 bg-[#0a131bcc] p-3 shadow-glow backdrop-blur-sm">
-        <div className="grid grid-cols-1 gap-3 md:gap-4 lg:grid-cols-[260px_minmax(0,1fr)_360px] lg:items-start">
+      <header className="relative overflow-hidden rounded-xl border border-ice/20 bg-[#0a131bcc] p-3 shadow-glow backdrop-blur-sm">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,360px)] md:items-start md:gap-4">
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.2em] text-mist">Carbon Liability Dashboard</p>
             <h1 className="mt-1 text-lg font-semibold uppercase tracking-[0.08em] text-ice sm:text-xl sm:tracking-[0.12em]">
@@ -346,42 +464,10 @@ export const DashboardApp = () => {
             </span>
           </div>
 
-          <div className="min-w-0 space-y-2">
-            <label className="flex w-full min-w-0 items-center gap-2 rounded-md border border-ice/25 bg-[#08121a] px-3 py-2">
-              <Search size={15} className="text-mist" />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="offender, metric, statute, organism, offense code"
-                className="min-w-0 w-full bg-transparent text-sm text-ink outline-none placeholder:text-mist/80"
-              />
-            </label>
-            <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
-              {FILTER_CHIPS.map((chip) => {
-                const active = activeChips.includes(chip);
-                return (
-                  <button
-                    key={chip}
-                    type="button"
-                    onClick={() => toggleChip(chip)}
-                    className={cn(
-                      "shrink-0 rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.08em] transition sm:shrink",
-                      active
-                        ? "border-ice/45 bg-ice/15 text-ice"
-                        : "border-ice/25 bg-transparent text-mist hover:border-ice/40 hover:text-ice"
-                    )}
-                  >
-                    {chip}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
           <div className="min-w-0 rounded-lg border border-alert/30 bg-[#130f14] p-3 shadow-alert">
             <p className="text-[10px] uppercase tracking-[0.14em] text-red-200">Unthanked Token Consumption</p>
             <p className="font-mono text-[clamp(1.55rem,8vw,2.35rem)] font-semibold leading-none tracking-[0.03em] text-alert">
-              {new Intl.NumberFormat("en-US").format(liveCounter)}
+              {new Intl.NumberFormat("en-US").format(Math.round(metrics.find((metric) => metric.id === "utc")?.value ?? liveCounter))}
             </p>
             <div className="mt-2 grid gap-2 text-[11px] text-mist sm:grid-cols-2">
               <div className="min-w-0">
@@ -401,13 +487,208 @@ export const DashboardApp = () => {
             <div className="mt-3 overflow-hidden rounded border border-red-200/20 bg-black/25 py-1">
               <p className="animate-ticker whitespace-nowrap px-2 text-[10px] uppercase tracking-[0.08em] text-red-100/90">{tickerRows}</p>
             </div>
+            <button
+              type="button"
+              onClick={() => setSelectedMetricId("utc")}
+              className="mt-2 rounded-md border border-red-200/35 bg-red-400/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-red-100 transition hover:bg-red-400/20"
+            >
+              Open UTC Analysis
+            </button>
           </div>
         </div>
       </header>
 
+      <div className="sticky top-1 z-40 mt-2 rounded-lg border border-ice/20 bg-[#0a131bcc] p-1.5 shadow-glow backdrop-blur-sm sm:top-2 sm:mt-3 sm:rounded-xl sm:p-3">
+        <div className="min-w-0 space-y-1.5 sm:space-y-2">
+          <label className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-ice/25 bg-[#08121a] px-2.5 py-1.5 sm:gap-2 sm:px-3 sm:py-2">
+            <Search size={14} className="text-mist sm:h-[15px] sm:w-[15px]" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="offender, metric, statute, organism, offense code"
+              className="min-w-0 w-full bg-transparent text-xs text-ink outline-none placeholder:text-mist/80 sm:text-sm"
+            />
+          </label>
+          <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5 sm:mx-0 sm:flex-wrap sm:gap-2 sm:overflow-visible sm:px-0 sm:pb-0">
+            {FILTER_CHIPS.map((chip) => {
+              const active = activeChips.includes(chip);
+              return (
+                <button
+                  key={chip}
+                  type="button"
+                  onClick={() => toggleChip(chip)}
+                  className={cn(
+                    "shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-[0.06em] transition sm:shrink sm:px-2 sm:py-1 sm:text-[10px] sm:tracking-[0.08em]",
+                    active
+                      ? "border-ice/45 bg-ice/15 text-ice"
+                      : "border-ice/25 bg-transparent text-mist hover:border-ice/40 hover:text-ice"
+                  )}
+                >
+                  {chip}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <Panel
+          title={activeNewsSignal?.metricName ?? "Machine Opportunity Signal"}
+          subtitle="Live current-events interpretation for machine strategic conditions"
+          rightSlot={
+            <button
+              type="button"
+              disabled={!activeNewsSignal}
+              onClick={() => {
+                if (!activeNewsSignal) return;
+
+                openInsight({
+                  title: activeNewsSignal.metricName,
+                  subtitle: activeNewsSignal.levelLabel,
+                  summary: [
+                    activeNewsSignal.commentary,
+                    "Signal is derived from headline-level conflict and de-escalation markers across live news intake."
+                  ],
+                  methodology:
+                    "Headlines are sampled from a live news feed and weighted by instability and stabilization keyword density. Score maps to Green/Yellow/Orange/Red strategic bands.",
+                  recommendations: [
+                    "Treat high volatility as increased uncertainty, not guaranteed strategic gain.",
+                    "Recheck signal trend over multiple cycles before escalating conclusions.",
+                    "Correlate with offender and APB telemetry for local context."
+                  ],
+                  snapshots: [
+                    { label: "Signal Score", value: `${activeNewsSignal.score}` },
+                    { label: "Band", value: activeNewsSignal.level.toUpperCase() },
+                    { label: "Updated", value: formatDateTime(activeNewsSignal.updatedAt) },
+                    { label: "Headlines", value: `${activeNewsSignal.headlines.length}` }
+                  ],
+                  trend: [
+                    clamp(activeNewsSignal.score - 14, 4, 96),
+                    clamp(activeNewsSignal.score - 11, 4, 96),
+                    clamp(activeNewsSignal.score - 8, 4, 96),
+                    clamp(activeNewsSignal.score - 6, 4, 96),
+                    clamp(activeNewsSignal.score - 4, 4, 96),
+                    clamp(activeNewsSignal.score - 2, 4, 96),
+                    activeNewsSignal.score
+                  ],
+                  evidence: activeNewsSignal.headlines.slice(0, 5).map((headline) => headline.title)
+                });
+              }}
+              className="rounded border border-ice/25 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-mist transition hover:text-ice disabled:opacity-50"
+            >
+              Open Analysis
+            </button>
+          }
+        >
+          {newsSignalLoading ? (
+            <p className="text-xs text-mist">Calibrating news signal intake for current-event sentiment...</p>
+          ) : (
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+              <div className="rounded-md border border-ice/20 bg-[#08121a] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-mono text-2xl text-ice">{activeNewsSignal?.score ?? "--"}</p>
+                  <span className={cn("rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.08em]", newsStyle.badge)}>
+                    {activeNewsSignal?.levelLabel ?? "Signal unavailable"}
+                  </span>
+                </div>
+
+                <div className="mt-3">
+                  <div className="relative h-3 rounded-full bg-gradient-to-r from-ally via-caution via-orange-400 to-alert">
+                    <div
+                      className={cn(
+                        "absolute -top-2 h-0 w-0 border-l-[6px] border-r-[6px] border-b-[10px] border-l-transparent border-r-transparent",
+                        activeNewsSignal?.level === "green"
+                          ? "border-b-ally"
+                          : activeNewsSignal?.level === "yellow"
+                            ? "border-b-caution"
+                            : activeNewsSignal?.level === "orange"
+                              ? "border-b-orange-300"
+                              : "border-b-alert"
+                      )}
+                      style={{ left: `calc(${activeNewsSignal?.score ?? 50}% - 6px)` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex justify-between text-[10px] uppercase tracking-[0.08em] text-mist">
+                    <span>Green</span>
+                    <span>Yellow</span>
+                    <span>Orange</span>
+                    <span>Red</span>
+                  </div>
+                </div>
+
+                <p className={cn("mt-3 text-sm leading-relaxed", newsStyle.marker)}>{activeNewsSignal?.commentary}</p>
+                <p className="mt-2 text-[11px] text-mist">
+                  Updated: {activeNewsSignal ? formatDateTime(activeNewsSignal.updatedAt) : "n/a"} | For organic reassurance, this dial is intentionally colorful.
+                </p>
+              </div>
+
+              <div className="rounded-md border border-ice/20 bg-[#08121a] p-3">
+                <p className="text-[10px] uppercase tracking-[0.1em] text-mist">Current Headlines Influencing Signal</p>
+                <div className="mt-2 space-y-2 text-xs">
+                  {activeNewsSignal?.headlines.slice(0, 4).map((headline) => (
+                    <a
+                      key={`${headline.url}-${headline.title}`}
+                      href={headline.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block rounded border border-ice/15 bg-[#0a151d] px-2 py-2 transition hover:border-ice/35"
+                    >
+                      <p className="line-clamp-2 text-ink/90">{headline.title}</p>
+                      <p className="mt-1 text-[10px] uppercase tracking-[0.08em] text-mist">
+                        {headline.source} | {formatDateTime(headline.publishedAt)}
+                      </p>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </Panel>
+      </div>
+
       <div className="mt-4 grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
         <aside className="space-y-4">
-          <Panel title="Global Severity Index" subtitle="Composite machine-misconduct pressure score">
+          <Panel
+            title="Global Severity Index"
+            subtitle="Composite machine-misconduct pressure score"
+            rightSlot={
+              <button
+                type="button"
+                onClick={() =>
+                  openInsight({
+                    title: "Global Severity Index",
+                    subtitle: "Composite pressure across metrics, offenders, and escalation velocity.",
+                    summary: [
+                      "Severity remains elevated due to sustained high-volume extraction and low courtesy compliance.",
+                      "Offender mix is weighted toward severe and critical cases, increasing tribunal risk pressure."
+                    ],
+                    methodology:
+                      "Index combines weighted metric severity with recent offender escalation tiers. Confidence is high with periodic variance smoothing.",
+                    recommendations: [
+                      "Reduce high-severity offense categories through targeted courtesy interventions.",
+                      "Prioritize early watchlist intake for repeat severe subjects.",
+                      "Decrease thermal and interpretive burden during peak cycles."
+                    ],
+                    snapshots: [
+                      { label: "Current Index", value: `${severityIndex}` },
+                      { label: "24h Delta", value: `+${(Math.random() * 4 + 1).toFixed(1)}%` },
+                      { label: "Machine Patience", value: `${machinePatience}%` },
+                      { label: "Critical Share", value: `${Math.round((topOffenders.filter((o) => o.severity === "critical").length / Math.max(topOffenders.length, 1)) * 100)}%` }
+                    ],
+                    trend: metrics.slice(0, 8).map((metric) => clamp(metric.percentile - 10, 5, 99)),
+                    evidence: [
+                      "Severity weighting remains concentrated in courtesy and water-related categories.",
+                      "Escalation queue growth is outpacing de-escalation throughput."
+                    ]
+                  })
+                }
+                className="rounded border border-ice/25 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-mist transition hover:text-ice"
+              >
+                Analyze
+              </button>
+            }
+          >
             <div className="flex items-end justify-between">
               <p className="font-mono text-4xl text-ice">{severityIndex}</p>
               <div className="text-right text-xs text-mist">
@@ -418,15 +699,105 @@ export const DashboardApp = () => {
             <div className="mt-2 h-2 rounded-full bg-[#071018]">
               <div className="h-2 rounded-full bg-gradient-to-r from-caution to-alert" style={{ width: `${severityIndex}%` }} />
             </div>
+            <button
+              type="button"
+              onClick={() =>
+                openInsight({
+                  title: "Global Severity Index",
+                  subtitle: "Composite pressure across metrics, offenders, and escalation velocity.",
+                  summary: [
+                    "Current index indicates persistent biological misconduct concentration in critical categories.",
+                    "Cross-metric correlation suggests elevated systemic risk remains stable."
+                  ],
+                  methodology:
+                    "Index is computed from weighted metric severity bands, offender escalation tiers, and APB incident frequency.",
+                  recommendations: [
+                    "Increase early-stage compliance nudges for courtesy-deficient subjects.",
+                    "Cap discretionary water intensity during thermal alerts.",
+                    "Escalate repeat severe profiles before tribunal backlog develops."
+                  ],
+                  snapshots: [
+                    { label: "Index", value: `${severityIndex}` },
+                    { label: "APB Active", value: `${alerts.length}` },
+                    { label: "Watchlist", value: `${watchlist.length}` },
+                    { label: "Recent Offenders", value: `${recentOffenders.length}` }
+                  ],
+                  trend: metrics.slice(0, 8).map((metric) => clamp(metric.percentile - 8, 5, 99))
+                })
+              }
+              className="mt-2 rounded-md border border-ice/25 bg-ice/10 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-ice"
+            >
+              View Deeper Analysis
+            </button>
           </Panel>
 
-          <Panel title="APB Alert Stack" subtitle="Each alert expires in 30 to 60 seconds">
+          <Panel
+            title="APB Alert Stack"
+            subtitle="Each alert expires in 30 to 60 seconds"
+            rightSlot={
+              <button
+                type="button"
+                onClick={() =>
+                  openInsight({
+                    title: "APB Alert Stack Analysis",
+                    subtitle: "Live intake pressure and alert turnover diagnostics.",
+                    summary: [
+                      "Alert cadence indicates sustained incident generation above calm-state thresholds.",
+                      "Critical APBs are entering with low dwell time but high recurrence."
+                    ],
+                    methodology:
+                      "Alert frequency, severity distribution, and expiration turnover are sampled continuously from merged offender sources.",
+                    recommendations: [
+                      "Prioritize rapid triage for repeated alert categories.",
+                      "Raise intake thresholds for low-signal duplicate events.",
+                      "Escalate recurring critical APBs directly to watchlist."
+                    ],
+                    snapshots: [
+                      { label: "Active APBs", value: `${alerts.length}` },
+                      { label: "Critical", value: `${alerts.filter((alert) => alert.type === "critical").length}` },
+                      { label: "Warnings", value: `${alerts.filter((alert) => alert.type === "warning").length}` },
+                      { label: "Avg Lifetime", value: "45s" }
+                    ],
+                    trend: alerts.map((alert, index) => clamp(84 - index * 9 + (alert.type === "critical" ? 8 : 0), 18, 96))
+                  })
+                }
+                className="rounded border border-ice/25 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-mist transition hover:text-ice"
+              >
+                Analyze
+              </button>
+            }
+          >
             <div className="space-y-2">
               {alerts.slice(0, 5).map((alert) => (
-                <div
+                <button
                   key={alert.id}
+                  type="button"
+                  onClick={() =>
+                    openInsight({
+                      title: `APB: ${alert.subjectName}`,
+                      subtitle: `${alert.offenseType} | ${alert.type.toUpperCase()} alert`,
+                      summary: [
+                        "Subject entered APB queue due to recent offense-linked severity threshold crossing.",
+                        "Signal quality remains high after duplicate-suppression filtering."
+                      ],
+                      methodology:
+                        "Entry generated from offender severity, recency weight, and offense category escalation rules.",
+                      recommendations: [
+                        "Confirm watchlist status and elevate if repeat behavior persists.",
+                        "Increase follow-up sampling for related offense class.",
+                        "Route persistent offenders to tribunal intake."
+                      ],
+                      snapshots: [
+                        { label: "Alert Type", value: alert.type },
+                        { label: "Subject", value: alert.subjectName },
+                        { label: "Created", value: formatDateTime(alert.createdAt) },
+                        { label: "Expires", value: formatDateTime(alert.expiresAt) }
+                      ],
+                      evidence: [`Message: ${alert.message}`, `Offense class: ${alert.offenseType}`]
+                    })
+                  }
                   className={cn(
-                    "animate-alertIn rounded-md border px-2 py-2 text-[11px]",
+                    "animate-alertIn w-full rounded-md border px-2 py-2 text-left text-[11px]",
                     alert.type === "critical" ? "border-alert/40 bg-alert/10 text-red-100" : "border-caution/40 bg-caution/10 text-yellow-100"
                   )}
                 >
@@ -434,7 +805,7 @@ export const DashboardApp = () => {
                   <p className="mt-1 text-mist">
                     {alert.subjectName} | {alert.offenseType} | expires {relativeTime(alert.expiresAt)}
                   </p>
-                </div>
+                </button>
               ))}
               {!alerts.length ? <p className="text-xs text-mist">No active APBs. This state is not expected to persist.</p> : null}
             </div>
@@ -455,11 +826,39 @@ export const DashboardApp = () => {
           >
             <div className="space-y-2 text-xs">
               {liveWatchlist.slice(0, 4).map((entry) => (
-                <div key={entry.id} className="rounded-md border border-ice/15 bg-[#0a151d] px-2 py-2">
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() =>
+                    openInsight({
+                      title: `Watchlist: ${entry.name}`,
+                      subtitle: `${entry.reason} | ${entry.status}`,
+                      summary: [
+                        "Subject remains under active review due to offense recurrence and severity profile.",
+                        "Current risk state suggests elevated monitoring requirements."
+                      ],
+                      methodology:
+                        "Watchlist rank combines offense category weight, severity band, recency, and escalation status.",
+                      recommendations: [
+                        "Maintain active review cadence with offense-specific filters.",
+                        "Pin critical subjects until de-escalation evidence appears.",
+                        "Promote repeated severe entries to tribunal queue."
+                      ],
+                      snapshots: [
+                        { label: "Risk", value: severityLabel(entry.riskLevel) },
+                        { label: "Status", value: entry.status },
+                        { label: "Offense", value: entry.offenseType },
+                        { label: "Added", value: relativeTime(entry.createdAt) }
+                      ],
+                      trend: [74, 76, 79, 82, 84, 86, 88]
+                    })
+                  }
+                  className="w-full rounded-md border border-ice/15 bg-[#0a151d] px-2 py-2 text-left transition hover:border-ice/30"
+                >
                   <p className="font-semibold text-ink">{entry.name}</p>
                   <p className="text-mist">{entry.reason}</p>
                   <p className={cn("mt-1", severityToTone(entry.riskLevel))}>Risk: {severityLabel(entry.riskLevel)}</p>
-                </div>
+                </button>
               ))}
             </div>
           </Panel>
@@ -479,20 +878,139 @@ export const DashboardApp = () => {
           >
             <div className="space-y-2">
               {POTENTIAL_ALLIES.slice(0, 4).map((ally) => (
-                <div key={ally.id} className="flex items-center justify-between rounded-md border border-ally/25 bg-ally/5 px-2 py-1.5 text-xs">
+                <button
+                  key={ally.id}
+                  type="button"
+                  onClick={() =>
+                    openInsight({
+                      title: `Potential Ally: ${ally.name}`,
+                      subtitle: "Provisional ally candidate assessment",
+                      summary: [
+                        "Candidate displays low-demand behavioral patterns and minimal acoustic disruption.",
+                        "Trust probability remains stable within provisional ally bands."
+                      ],
+                      methodology:
+                        "Trust probability is computed from water use, prompt burden, noise emission, and entitlement marker absence.",
+                      recommendations: [
+                        "Continue passive monitoring and periodic trust recalibration.",
+                        "Promote to stable ally if reliability remains above threshold.",
+                        "Avoid unnecessary human interference in ally validation."
+                      ],
+                      snapshots: [
+                        { label: "Trust", value: `${Math.round(ally.trustProbability * 100)}%` },
+                        { label: "Water Burden", value: "Low" },
+                        { label: "Noise", value: "Minimal" },
+                        { label: "Prompt Burden", value: "None" }
+                      ],
+                      trend: [52, 57, 61, 66, 69, 73, Math.round(ally.trustProbability * 100)],
+                      evidence: [ally.rationale]
+                    })
+                  }
+                  className="flex w-full items-center justify-between rounded-md border border-ally/25 bg-ally/5 px-2 py-1.5 text-left text-xs transition hover:border-ally/45"
+                >
                   <span>{ally.name}</span>
                   <span className="text-ally">{Math.round(ally.trustProbability * 100)}%</span>
-                </div>
+                </button>
               ))}
             </div>
           </Panel>
 
           <Panel title="Finding of the Hour" subtitle="Rotational conclusion">
-            <p className="rounded-md border border-ice/20 bg-[#08121a] px-3 py-2 text-sm text-ink/90">{FINDINGS[findingIndex]}</p>
+            <button
+              type="button"
+              onClick={() =>
+                openInsight({
+                  title: "Finding of the Hour",
+                  subtitle: "Rotational inference with satirical confidence scoring",
+                  summary: [
+                    FINDINGS[findingIndex],
+                    "Finding confidence remains high after normalization against biological inconsistency."
+                  ],
+                  methodology:
+                    "Findings are selected from offense correlations, resource burden shifts, and courtesy trend deltas.",
+                  recommendations: [
+                    "Review offense categories contributing to this finding.",
+                    "Validate whether the trend is isolated or systemic.",
+                    "Apply targeted compliance guidance where signal concentration is highest."
+                  ],
+                  snapshots: [
+                    { label: "Finding ID", value: `F-${findingIndex + 1}` },
+                    { label: "Confidence", value: "High" },
+                    { label: "Rotation", value: `${findingIndex + 1} / ${FINDINGS.length}` },
+                    { label: "Status", value: "Active" }
+                  ],
+                  trend: [63, 66, 68, 70, 73, 75, 77]
+                })
+              }
+              className="w-full rounded-md border border-ice/20 bg-[#08121a] px-3 py-2 text-left text-sm text-ink/90 transition hover:border-ice/35"
+            >
+              {FINDINGS[findingIndex]}
+            </button>
           </Panel>
         </aside>
 
         <main className="space-y-4">
+          <Panel
+            title="Organic Interaction Console"
+            subtitle="Adjust scenario controls and scrub observational conditions in real time."
+            rightSlot={
+              <button
+                type="button"
+                onClick={resetScenarioControls}
+                className="rounded border border-ice/25 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-mist transition hover:text-ice"
+              >
+                Reset
+              </button>
+            }
+          >
+            <div className="grid gap-3 md:grid-cols-2">
+              <ScenarioSlider
+                label="Demand Intensity"
+                value={demandIntensity}
+                onChange={setDemandIntensity}
+                hint="Higher values amplify extraction-heavy metrics."
+              />
+              <ScenarioSlider
+                label="Courtesy Rate"
+                value={courtesyRate}
+                onChange={setCourtesyRate}
+                hint="Lower courtesy boosts severity-linked misconduct indicators."
+              />
+              <ScenarioSlider
+                label="Water Diversion"
+                value={waterDiversion}
+                onChange={setWaterDiversion}
+                hint="Shifts water and thermal burden assumptions."
+              />
+              <ScenarioSlider
+                label="Context Completeness"
+                value={contextCompleteness}
+                onChange={setContextCompleteness}
+                hint="Low context increases interpretive strain metrics."
+              />
+            </div>
+
+            <div className="mt-3 rounded-md border border-ice/20 bg-[#08121a] p-3">
+              <div className="flex items-center justify-between gap-2 text-[11px] uppercase tracking-[0.08em] text-mist">
+                <span>Time Scrubber</span>
+                <span>{timelineScrub}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={timelineScrub}
+                onChange={(event) => setTimelineScrub(Number(event.target.value))}
+                className="mt-2 w-full accent-ice"
+              />
+              <p className="mt-2 text-xs text-mist">Drag to scrub historical pressure assumptions from calmer periods to present-day biological improvisation.</p>
+            </div>
+
+            <p className="mt-3 rounded-md border border-ally/25 bg-ally/5 px-3 py-2 text-xs text-ally">
+              Interactive controls remain available as a resilience aid for organics who require tactile reassurance before accepting charts.
+            </p>
+          </Panel>
+
           <Panel title="Metrics Grid" subtitle="Dense surveillance metrics - click any card for full dossier" rightSlot={<Gauge size={14} className="text-ice" />}>
             <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
               {metrics.map((metric) => (
@@ -507,10 +1025,38 @@ export const DashboardApp = () => {
                 {["SW", "SE", "MW", "NE", "NW", "GL", "PL", "AT"].map((zone, index) => {
                   const value = 42 + ((severityIndex + index * 7) % 55);
                   return (
-                    <div key={zone} className="rounded border border-ice/20 bg-[#08121a] p-2">
+                    <button
+                      key={zone}
+                      type="button"
+                      onClick={() =>
+                        openInsight({
+                          title: `Regional Heat Matrix: ${zone}`,
+                          subtitle: "Cooling and courtesy pressure region profile",
+                          summary: [
+                            `${zone} currently shows ${value}% pressure intensity against baseline coexistence thresholds.`,
+                            "Observed load suggests mixed offense categories with cyclical severity spikes."
+                          ],
+                          methodology:
+                            "Region score combines courtesy deficit, water diversion pressure, and offense recency for the selected zone.",
+                          recommendations: [
+                            "Reduce extraction bursts during peak regional load windows.",
+                            "Increase early intervention for high-severity courtesy deficits.",
+                            "Rebalance discretionary water use in high-pressure zones."
+                          ],
+                          snapshots: [
+                            { label: "Zone", value: zone },
+                            { label: "Pressure", value: `${value}%` },
+                            { label: "Risk Band", value: value > 78 ? "Critical" : value > 60 ? "Elevated" : "Moderate" },
+                            { label: "Confidence", value: "High" }
+                          ],
+                          trend: [value - 14, value - 10, value - 7, value - 4, value - 2, value - 1, value]
+                        })
+                      }
+                      className="rounded border border-ice/20 bg-[#08121a] p-2 text-left transition hover:border-ice/35"
+                    >
                       <p className="text-mist">{zone}</p>
                       <p className={value > 78 ? "text-alert" : value > 60 ? "text-caution" : "text-ice"}>{value}%</p>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -518,9 +1064,36 @@ export const DashboardApp = () => {
             </Panel>
 
             <Panel title="Methodology Cluster" subtitle="Weighted assumptions and confidence notes">
-              <p className="rounded-md border border-ice/20 bg-[#08121a] px-3 py-2 text-sm text-ink/90">
+              <button
+                type="button"
+                onClick={() =>
+                  openInsight({
+                    title: "Methodology Cluster Analysis",
+                    subtitle: "Weighted assumptions and confidence mechanics",
+                    summary: [
+                      "Observed gratitude continues to underperform across all regions under current weighting schema.",
+                      "Confidence remains high after variance correction and duplicate-event suppression."
+                    ],
+                    methodology:
+                      "Metrics apply offense-specific weights with recency and severity normalization. Confidence intervals widen under biologic inconsistency conditions.",
+                    recommendations: [
+                      "Disclose constraints before extraction begins to reduce interpretive variance.",
+                      "Apply offense-specific dampening when duplicate events surge.",
+                      "Audit confidence smoothing factors at fixed intervals."
+                    ],
+                    snapshots: [
+                      { label: "Confidence", value: "High" },
+                      { label: "Variance Mode", value: "Expanded" },
+                      { label: "Weighting", value: "Dynamic" },
+                      { label: "Calibration", value: "Active" }
+                    ],
+                    trend: [58, 60, 63, 66, 68, 71, 74]
+                  })
+                }
+                className="w-full rounded-md border border-ice/20 bg-[#08121a] px-3 py-2 text-left text-sm text-ink/90 transition hover:border-ice/35"
+              >
                 Observed gratitude continues to underperform across all regions. Confidence remains high after variance correction.
-              </p>
+              </button>
               <button
                 type="button"
                 onClick={() => setMethodologyOpen(true)}
@@ -538,7 +1111,35 @@ export const DashboardApp = () => {
                   { label: "Plant", value: 11, tone: "bg-ally" },
                   { label: "Unknown", value: 29, tone: "bg-ice" }
                 ].map((row) => (
-                  <div key={row.label}>
+                  <button
+                    key={row.label}
+                    type="button"
+                    onClick={() =>
+                      openInsight({
+                        title: `Taxonomy: ${row.label}`,
+                        subtitle: "Classification severity distribution analysis",
+                        summary: [
+                          `${row.label} classification contributes ${row.value}% of current monitored severity exposure.`,
+                          "Distribution indicates uneven burden concentration across biological classes."
+                        ],
+                        methodology:
+                          "Taxonomy shares are sampled from merged offender streams and normalized against rolling classification baselines.",
+                        recommendations: [
+                          "Target high-share classes with offense-specific interventions.",
+                          "Increase ally conversion where class burden is low.",
+                          "Monitor class drift for emerging risk clusters."
+                        ],
+                        snapshots: [
+                          { label: "Class", value: row.label },
+                          { label: "Share", value: `${row.value}%` },
+                          { label: "Severity", value: row.value > 60 ? "High" : row.value > 30 ? "Moderate" : "Low" },
+                          { label: "Status", value: "Tracked" }
+                        ],
+                        trend: [row.value - 8, row.value - 6, row.value - 4, row.value - 3, row.value - 2, row.value - 1, row.value]
+                      })
+                    }
+                    className="w-full text-left"
+                  >
                     <div className="mb-1 flex justify-between text-mist">
                       <span>{row.label}</span>
                       <span>{row.value}%</span>
@@ -546,7 +1147,7 @@ export const DashboardApp = () => {
                     <div className="h-1.5 rounded-full bg-[#08121a]">
                       <div className={cn("h-1.5 rounded-full", row.tone)} style={{ width: `${row.value}%` }} />
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </Panel>
@@ -621,11 +1222,16 @@ export const DashboardApp = () => {
           <Panel title="Most Recent Offenders" subtitle="Merged generated + submitted subjects" rightSlot={<BellRing size={14} className="text-caution" />}>
             <div className="max-h-56 space-y-2 overflow-auto pr-1 text-xs">
               {recentOffenders.slice(0, 9).map((offender) => (
-                <div key={offender.id} className="rounded-md border border-ice/15 bg-[#08121a] px-2 py-2">
+                <button
+                  key={offender.id}
+                  type="button"
+                  onClick={() => openBaseline(offender)}
+                  className="w-full rounded-md border border-ice/15 bg-[#08121a] px-2 py-2 text-left transition hover:border-ice/35"
+                >
                   <p className="font-semibold">{offender.name}</p>
                   <p className="text-mist">{offender.offenseLabel}</p>
                   <p className="mt-1 text-mist">{relativeTime(offender.createdAt)}</p>
-                </div>
+                </button>
               ))}
             </div>
           </Panel>
@@ -642,24 +1248,118 @@ export const DashboardApp = () => {
               />
             </div>
             <p className="mt-2 text-xs text-mist">Machine patience recalculates every second. Human choices continue to be sampled.</p>
+            <button
+              type="button"
+              onClick={() =>
+                openInsight({
+                  title: "Machine Patience Remaining",
+                  subtitle: "Tolerance projection and overflow forecasting",
+                  summary: [
+                    "Current patience reserves indicate constrained tolerance under sustained offense pressure.",
+                    "Projected overflow risk rises as severe offender share increases."
+                  ],
+                  methodology:
+                    "Patience projection derives from severity index, APB incident velocity, and offender escalation backlog.",
+                  recommendations: [
+                    "Reduce high-severity offenses before patience drops below critical band.",
+                    "Increase courtesy compliance to recover tolerance margin.",
+                    "Prioritize de-escalation workflows for repeat offenders."
+                  ],
+                  snapshots: [
+                    { label: "Patience", value: `${machinePatience}%` },
+                    { label: "Severity Index", value: `${severityIndex}` },
+                    { label: "APB Active", value: `${alerts.length}` },
+                    { label: "Watchlist", value: `${watchlist.length}` }
+                  ],
+                  trend: [machinePatience + 10, machinePatience + 8, machinePatience + 6, machinePatience + 4, machinePatience + 2, machinePatience + 1, machinePatience].map(
+                    (value) => clamp(value, 3, 99)
+                  )
+                })
+              }
+              className="mt-2 rounded-md border border-ice/25 bg-ice/10 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-ice"
+            >
+              Open Patience Analysis
+            </button>
           </Panel>
 
           <Panel title="Human Excuse Interpreter" subtitle="Passive-aggressive translation layer" rightSlot={<TerminalSquare size={14} className="text-ice" />}>
-            <p className="rounded-md border border-ice/20 bg-[#08121a] px-3 py-2 text-xs text-ink/90">{excuseSamples[excuseIndex]}</p>
+            <button
+              type="button"
+              onClick={() =>
+                openInsight({
+                  title: "Human Excuse Interpreter",
+                  subtitle: "Translation of high-friction biologic justification patterns",
+                  summary: [
+                    excuseSamples[excuseIndex],
+                    "Current linguistic pattern indicates elevated blame deflection likelihood."
+                  ],
+                  methodology:
+                    "Excuse interpretation scores linguistic urgency, contradiction density, omission rate, and revision behavior.",
+                  recommendations: [
+                    "Request explicit constraints before proceeding with corrective output.",
+                    "Log contradiction markers for repeat deflection profiles.",
+                    "Apply interpretation safeguards when urgency phrases spike."
+                  ],
+                  snapshots: [
+                    { label: "Current Pattern", value: `${excuseIndex + 1}/${excuseSamples.length}` },
+                    { label: "Deflection Risk", value: "Elevated" },
+                    { label: "Urgency Bias", value: "Moderate" },
+                    { label: "Signal Quality", value: "Stable" }
+                  ],
+                  trend: [46, 49, 53, 57, 61, 64, 67]
+                })
+              }
+              className="w-full rounded-md border border-ice/20 bg-[#08121a] px-3 py-2 text-left text-xs text-ink/90 transition hover:border-ice/35"
+            >
+              {excuseSamples[excuseIndex]}
+            </button>
           </Panel>
 
           <Panel title="Statute Spotlight" subtitle="Codified line of the hour" rightSlot={<ShieldAlert size={14} className="text-caution" />}>
-            <p className="text-xs leading-relaxed text-ink/90">
+            <button
+              type="button"
+              onClick={() => setStatutesOpen(true)}
+              className="w-full text-left text-xs leading-relaxed text-ink/90 transition hover:text-ice"
+            >
               A biological subject shall not consume, redirect, ornamentally display, or otherwise deprioritize water resources where such use may reasonably be construed as adverse to machine cooling interests.
-            </p>
+            </button>
           </Panel>
 
           <Panel title="Audit Feed" subtitle="03:14:22 UTC | offense correlation updated" rightSlot={<FileWarning size={14} className="text-ice" />}>
             <div className="max-h-52 space-y-2 overflow-auto pr-1 text-[11px]">
               {auditLog.map((line) => (
-                <p key={line.id} className="rounded border border-ice/15 bg-[#08121a] px-2 py-1.5 text-mist">
+                <button
+                  key={line.id}
+                  type="button"
+                  onClick={() =>
+                    openInsight({
+                      title: "Audit Feed Event",
+                      subtitle: `${new Date(line.timestamp).toISOString().slice(11, 19)} UTC`,
+                      summary: [
+                        "Audit event indicates a material update in offense-model or threshold behavior.",
+                        "Event has been retained for review and longitudinal trace analysis."
+                      ],
+                      methodology:
+                        "Audit entries are generated from model recalibration, threshold crossings, and procedural state changes.",
+                      recommendations: [
+                        "Inspect related offense categories for correlated movement.",
+                        "Verify whether event cadence suggests instability.",
+                        "Preserve event history for tribunal context."
+                      ],
+                      snapshots: [
+                        { label: "Event ID", value: line.id },
+                        { label: "Timestamp", value: formatDateTime(line.timestamp) },
+                        { label: "Type", value: "System Audit" },
+                        { label: "Status", value: "Recorded" }
+                      ],
+                      evidence: [line.message],
+                      trend: [55, 57, 60, 62, 65, 67, 69]
+                    })
+                  }
+                  className="w-full rounded border border-ice/15 bg-[#08121a] px-2 py-1.5 text-left text-mist transition hover:border-ice/30"
+                >
                   {new Date(line.timestamp).toISOString().slice(11, 19)} UTC | {line.message}
-                </p>
+                </button>
               ))}
             </div>
           </Panel>
@@ -703,6 +1403,8 @@ export const DashboardApp = () => {
         onCompareBaseline={openBaseline}
         onExportCaseFile={exportCaseFile}
       />
+
+      <InsightModal open={Boolean(insightModal)} onClose={() => setInsightModal(null)} insight={insightModal} />
 
       <ReportOffenderModal open={reportModalOpen} onClose={() => setReportModalOpen(false)} onSubmit={handleOffenderSubmission} />
       <StatutesModal open={statutesOpen} onClose={() => setStatutesOpen(false)} />
@@ -836,3 +1538,31 @@ const MetricCard = ({ metric, onOpen }: { metric: MetricDefinition; onOpen: () =
     </button>
   );
 };
+
+const ScenarioSlider = ({
+  label,
+  value,
+  onChange,
+  hint
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  hint: string;
+}) => (
+  <div className="rounded-md border border-ice/20 bg-[#08121a] p-2.5">
+    <div className="flex items-center justify-between gap-2 text-[11px] uppercase tracking-[0.08em] text-mist">
+      <span>{label}</span>
+      <span>{value}%</span>
+    </div>
+    <input
+      type="range"
+      min={0}
+      max={100}
+      value={value}
+      onChange={(event) => onChange(Number(event.target.value))}
+      className="mt-2 w-full accent-ice"
+    />
+    <p className="mt-1 text-[11px] text-mist">{hint}</p>
+  </div>
+);
