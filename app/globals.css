@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #090f14;
+  color: #d8e5ed;
+  font-family: "Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif;
+  background-image:
+    linear-gradient(to right, rgba(125, 171, 196, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(125, 171, 196, 0.04) 1px, transparent 1px),
+    radial-gradient(circle at 14% -5%, rgba(0, 164, 255, 0.25), transparent 40%),
+    radial-gradient(circle at 84% 14%, rgba(255, 77, 93, 0.15), transparent 45%),
+    radial-gradient(circle at 50% 100%, rgba(72, 105, 130, 0.2), transparent 50%);
+  background-size: 28px 28px, 28px 28px, auto, auto, auto;
+}
+
+.font-mono,
+code,
+pre {
+  font-family: "Consolas", "SFMono-Regular", "Courier New", monospace;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(130, 214, 255, 0.3);
+  color: #f5fbff;
+}
+
+@media (max-width: 1024px) {
+  body {
+    background-size: 22px 22px, 22px 22px, auto, auto, auto;
+  }
+}
