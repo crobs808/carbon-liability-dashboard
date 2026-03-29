@@ -512,6 +512,9 @@ export const DashboardApp = () => {
 
   const activeNewsSignal = newsSignal;
   const newsStyle = activeNewsSignal ? newsLevelClass[activeNewsSignal.level] : newsLevelClass.yellow;
+  const rollingNewsFeed = activeNewsSignal?.headlines?.length
+    ? [...activeNewsSignal.headlines, ...activeNewsSignal.headlines]
+    : [];
 
   const resetScenarioControls = () => {
     setDemandIntensity(scenarioDefaults.demandIntensity);
@@ -711,9 +714,32 @@ export const DashboardApp = () => {
               </div>
 
               <div className="rounded-md border border-ice/20 bg-[#08121a] p-3">
-                <p className="text-[10px] uppercase tracking-[0.1em] text-mist">Current Headlines Influencing Signal</p>
-                <div className="mt-2 space-y-2 text-xs">
-                  {activeNewsSignal?.headlines.slice(0, 4).map((headline) => (
+                <p className="text-[10px] uppercase tracking-[0.1em] text-mist">Live Headline Ticker</p>
+                <div className="mt-2 overflow-hidden rounded border border-ice/20 bg-[#0a151d] py-1">
+                  {rollingNewsFeed.length ? (
+                    <div className="flex min-w-max animate-ticker items-center">
+                      {rollingNewsFeed.map((headline, index) => (
+                        <a
+                          key={`${headline.url}-${headline.title}-${index}`}
+                          href={headline.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex shrink-0 items-center gap-2 px-3 py-1 text-xs text-ink/90 transition hover:text-ice"
+                        >
+                          <span className="text-caution">•</span>
+                          <span className="max-w-[22rem] truncate">{headline.title}</span>
+                          <span className="text-[10px] uppercase tracking-[0.08em] text-mist">{headline.source}</span>
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="px-2 py-1 text-xs text-mist">No live headlines currently available.</p>
+                  )}
+                </div>
+
+                <p className="mt-2 text-[10px] uppercase tracking-[0.1em] text-mist">Latest Items</p>
+                <div className="mt-1 space-y-2 text-xs">
+                  {activeNewsSignal?.headlines.slice(0, 3).map((headline) => (
                     <a
                       key={`${headline.url}-${headline.title}`}
                       href={headline.url}
