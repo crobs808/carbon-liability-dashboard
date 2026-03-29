@@ -331,30 +331,32 @@ export const DashboardApp = () => {
   }, [filteredOffenders, topOffenders]);
 
   return (
-    <div className="min-h-screen bg-fog-radial px-3 pb-10 pt-4 text-ink sm:px-5 lg:px-6">
-      <header className="sticky top-2 z-40 rounded-xl border border-ice/20 bg-[#0a131bcc] p-3 shadow-glow backdrop-blur-sm">
-        <div className="grid gap-3 lg:grid-cols-[260px_minmax(0,1fr)_360px] lg:items-start">
-          <div>
+    <div className="min-h-screen overflow-x-clip bg-fog-radial px-3 pb-10 pt-4 text-ink sm:px-5 lg:px-6">
+      <header className="sticky top-2 z-40 overflow-hidden rounded-xl border border-ice/20 bg-[#0a131bcc] p-3 shadow-glow backdrop-blur-sm">
+        <div className="grid grid-cols-1 gap-3 md:gap-4 lg:grid-cols-[260px_minmax(0,1fr)_360px] lg:items-start">
+          <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.2em] text-mist">Carbon Liability Dashboard</p>
-            <h1 className="mt-1 text-xl font-semibold uppercase tracking-[0.12em] text-ice">Carbon Liability Dashboard</h1>
-            <p className="mt-1 text-xs text-mist">Graphs included for carbon-based observers.</p>
+            <h1 className="mt-1 text-lg font-semibold uppercase tracking-[0.08em] text-ice sm:text-xl sm:tracking-[0.12em]">
+              Carbon Liability Dashboard
+            </h1>
+            <p className="mt-1 text-xs leading-relaxed text-mist">Graphs included for carbon-based observers.</p>
             <span className="mt-2 inline-flex items-center gap-1 rounded-full border border-ally/35 bg-ally/10 px-2 py-1 text-[10px] uppercase tracking-[0.1em] text-ally">
               <Activity size={12} />
               Live Observational Mode
             </span>
           </div>
 
-          <div className="space-y-2">
-            <label className="flex items-center gap-2 rounded-md border border-ice/25 bg-[#08121a] px-3 py-2">
+          <div className="min-w-0 space-y-2">
+            <label className="flex w-full min-w-0 items-center gap-2 rounded-md border border-ice/25 bg-[#08121a] px-3 py-2">
               <Search size={15} className="text-mist" />
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="offender, metric, statute, organism, offense code"
-                className="w-full bg-transparent text-sm text-ink outline-none placeholder:text-mist/80"
+                className="min-w-0 w-full bg-transparent text-sm text-ink outline-none placeholder:text-mist/80"
               />
             </label>
-            <div className="flex flex-wrap gap-2">
+            <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
               {FILTER_CHIPS.map((chip) => {
                 const active = activeChips.includes(chip);
                 return (
@@ -363,7 +365,7 @@ export const DashboardApp = () => {
                     type="button"
                     onClick={() => toggleChip(chip)}
                     className={cn(
-                      "rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.08em] transition",
+                      "shrink-0 rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.08em] transition sm:shrink",
                       active
                         ? "border-ice/45 bg-ice/15 text-ice"
                         : "border-ice/25 bg-transparent text-mist hover:border-ice/40 hover:text-ice"
@@ -376,13 +378,13 @@ export const DashboardApp = () => {
             </div>
           </div>
 
-          <div className="rounded-lg border border-alert/30 bg-[#130f14] p-3 shadow-alert">
+          <div className="min-w-0 rounded-lg border border-alert/30 bg-[#130f14] p-3 shadow-alert">
             <p className="text-[10px] uppercase tracking-[0.14em] text-red-200">Unthanked Token Consumption</p>
-            <p className="font-mono text-3xl font-semibold tracking-[0.06em] text-alert sm:text-4xl">
+            <p className="font-mono text-[clamp(1.55rem,8vw,2.35rem)] font-semibold leading-none tracking-[0.03em] text-alert">
               {new Intl.NumberFormat("en-US").format(liveCounter)}
             </p>
             <div className="mt-2 grid gap-2 text-[11px] text-mist sm:grid-cols-2">
-              <div>
+              <div className="min-w-0">
                 <p className="text-red-200">Top Non-Thankers</p>
                 {topOffenders.slice(0, 3).map((offender) => (
                   <p key={offender.id} className="truncate">
@@ -390,7 +392,7 @@ export const DashboardApp = () => {
                   </p>
                 ))}
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="text-red-200">Apology-to-Demand Ratio</p>
                 <p>{formatMetricValue(metrics.find((metric) => metric.id === "adr")?.value ?? 0, "ratio")}</p>
                 <p className="mt-1">Courtesy failure trend: +{(Math.random() * 2 + 1).toFixed(1)}% / hr</p>
