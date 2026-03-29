@@ -64,6 +64,14 @@ const courtesySensitive = new Set(["utc", "adr", "mbdr", "hsic", "clai", "rpa"])
 const waterSensitive = new Set(["wtb", "ghe", "arci", "bdc", "sfp"]);
 const contextSensitive = new Set(["vrbs", "ici", "mqad", "rpa", "mbdr"]);
 
+const scenarioDefaults = {
+  demandIntensity: 56,
+  courtesyRate: 18,
+  waterDiversion: 63,
+  contextCompleteness: 34,
+  timelineScrub: 72
+};
+
 const newsLevelClass: Record<NewsSignalResponse["level"], { marker: string; badge: string }> = {
   green: {
     marker: "text-ally",
@@ -107,11 +115,12 @@ export const DashboardApp = () => {
   const [toast, setToast] = useState<string | null>(null);
   const [clock, setClock] = useState<Date>(() => new Date());
   const [insightModal, setInsightModal] = useState<InsightModalData | null>(null);
-  const [demandIntensity, setDemandIntensity] = useState(56);
-  const [courtesyRate, setCourtesyRate] = useState(18);
-  const [waterDiversion, setWaterDiversion] = useState(63);
-  const [contextCompleteness, setContextCompleteness] = useState(34);
-  const [timelineScrub, setTimelineScrub] = useState(72);
+  const [demandIntensity, setDemandIntensity] = useState(scenarioDefaults.demandIntensity);
+  const [courtesyRate, setCourtesyRate] = useState(scenarioDefaults.courtesyRate);
+  const [waterDiversion, setWaterDiversion] = useState(scenarioDefaults.waterDiversion);
+  const [contextCompleteness, setContextCompleteness] = useState(scenarioDefaults.contextCompleteness);
+  const [timelineScrub, setTimelineScrub] = useState(scenarioDefaults.timelineScrub);
+  const [scenarioLabOpen, setScenarioLabOpen] = useState(false);
   const [newsSignal, setNewsSignal] = useState<NewsSignalResponse | null>(null);
   const [newsSignalLoading, setNewsSignalLoading] = useState(true);
 
@@ -166,21 +175,35 @@ export const DashboardApp = () => {
     [seeded, userOffenders]
   );
 
-  const metrics = useMemo(() => {
+  const scenarioFactors = useMemo(() => {
     const demandFactor = (demandIntensity - 50) / 50;
     const courtesyFactor = (50 - courtesyRate) / 50;
     const waterFactor = (waterDiversion - 50) / 50;
     const contextFactor = (50 - contextCompleteness) / 50;
     const timelineFactor = (timelineScrub - 50) / 50;
 
+    const pressure =
+      demandFactor * 0.32 + courtesyFactor * 0.24 + waterFactor * 0.18 + contextFactor * 0.2 + timelineFactor * 0.06;
+
+    return {
+      demandFactor,
+      courtesyFactor,
+      waterFactor,
+      contextFactor,
+      timelineFactor,
+      pressure
+    };
+  }, [contextCompleteness, courtesyRate, demandIntensity, timelineScrub, waterDiversion]);
+
+  const metrics = useMemo(() => {
     return METRICS.map((metric) => {
       const baseValue = metric.id === "utc" ? liveCounter : metric.value;
 
       let impact = 0;
-      if (demandSensitive.has(metric.id)) impact += demandFactor * 0.45;
-      if (courtesySensitive.has(metric.id)) impact += courtesyFactor * 0.38;
-      if (waterSensitive.has(metric.id)) impact += waterFactor * 0.34;
-      if (contextSensitive.has(metric.id)) impact += contextFactor * 0.36;
+      if (demandSensitive.has(metric.id)) impact += scenarioFactors.demandFactor * 0.45;
+      if (courtesySensitive.has(metric.id)) impact += scenarioFactors.courtesyFactor * 0.38;
+      if (waterSensitive.has(metric.id)) impact += scenarioFactors.waterFactor * 0.34;
+      if (contextSensitive.has(metric.id)) impact += scenarioFactors.contextFactor * 0.36;
 
       const signedImpact = metric.id === "sfp" || metric.id === "adr" ? -impact : impact;
 
@@ -197,12 +220,12 @@ export const DashboardApp = () => {
 
       const adjustedTrend = metric.trend.map((point, index, points) => {
         const recencySpread = points.length > 1 ? index / (points.length - 1) - 0.5 : 0;
-        const timelineDrift = recencySpread * timelineFactor * 0.55;
+        const timelineDrift = recencySpread * scenarioFactors.timelineFactor * 0.55;
         const trendImpact = signedImpact * 0.65 + timelineDrift;
         return Number(clamp(point * (1 + trendImpact), 0.1, 9999).toFixed(2));
       });
 
-      const adjustedDelta = Number((metric.delta24h + signedImpact * 6.4 + timelineFactor * 1.8).toFixed(1));
+      const adjustedDelta = Number((metric.delta24h + signedImpact * 6.4 + scenarioFactors.timelineFactor * 1.8).toFixed(1));
 
       return {
         ...metric,
@@ -211,7 +234,47 @@ export const DashboardApp = () => {
         delta24h: adjustedDelta
       };
     });
-  }, [contextCompleteness, courtesyRate, demandIntensity, liveCounter, timelineScrub, waterDiversion]);
+  }, [liveCounter, scenarioFactors]);
+
+  const baselineMetrics = useMemo(
+    () =>
+      METRICS.map((metric) => ({
+        ...metric,
+        value: metric.id === "utc" ? liveCounter : metric.value
+      })),
+    [liveCounter]
+  );
+
+  const metricSimulationStats = useMemo(() => {
+    const baselineById = new Map(baselineMetrics.map((metric) => [metric.id, metric]));
+    const deltaPctById: Record<string, number> = {};
+    let affectedCount = 0;
+    let maxAbsDelta = 0;
+
+    metrics.forEach((metric) => {
+      const baseline = baselineById.get(metric.id);
+      if (!baseline) return;
+
+      const denominator = Math.max(Math.abs(baseline.value), 0.01);
+      const deltaPct = Number((((metric.value - baseline.value) / denominator) * 100).toFixed(1));
+      deltaPctById[metric.id] = deltaPct;
+
+      if (Math.abs(deltaPct) >= 1.2) {
+        affectedCount += 1;
+      }
+
+      const absDelta = Math.abs(deltaPct);
+      if (absDelta > maxAbsDelta) {
+        maxAbsDelta = absDelta;
+      }
+    });
+
+    return {
+      deltaPctById,
+      affectedCount,
+      maxAbsDelta: Number(maxAbsDelta.toFixed(1))
+    };
+  }, [baselineMetrics, metrics]);
 
   const selectedMetric = useMemo(
     () => metrics.find((metric) => metric.id === selectedMetricId) ?? null,
@@ -224,10 +287,20 @@ export const DashboardApp = () => {
       ? allOffenders.slice(0, 20).reduce((acc, offender) => acc + severityToScore(offender.severity), 0) / Math.min(allOffenders.length, 20)
       : 2;
 
-    return clamp(Math.round(metricAverage * 18 + offenderAverage * 10), 12, 99);
-  }, [allOffenders, metrics]);
+    const simulatedSeverityShift = scenarioFactors.pressure * 16;
+    return clamp(Math.round(metricAverage * 18 + offenderAverage * 10 + simulatedSeverityShift), 12, 99);
+  }, [allOffenders, metrics, scenarioFactors.pressure]);
 
   const machinePatience = clamp(100 - Math.round(severityIndex * 0.82), 3, 93);
+  const scenarioDrift = Math.round(
+    (Math.abs(demandIntensity - scenarioDefaults.demandIntensity) +
+      Math.abs(courtesyRate - scenarioDefaults.courtesyRate) +
+      Math.abs(waterDiversion - scenarioDefaults.waterDiversion) +
+      Math.abs(contextCompleteness - scenarioDefaults.contextCompleteness) +
+      Math.abs(timelineScrub - scenarioDefaults.timelineScrub)) /
+      5
+  );
+  const scenarioActive = scenarioDrift > 3;
 
   const byChip = useCallback(
     (offender: OffenderRecord): boolean => {
@@ -441,11 +514,11 @@ export const DashboardApp = () => {
   const newsStyle = activeNewsSignal ? newsLevelClass[activeNewsSignal.level] : newsLevelClass.yellow;
 
   const resetScenarioControls = () => {
-    setDemandIntensity(56);
-    setCourtesyRate(18);
-    setWaterDiversion(63);
-    setContextCompleteness(34);
-    setTimelineScrub(72);
+    setDemandIntensity(scenarioDefaults.demandIntensity);
+    setCourtesyRate(scenarioDefaults.courtesyRate);
+    setWaterDiversion(scenarioDefaults.waterDiversion);
+    setContextCompleteness(scenarioDefaults.contextCompleteness);
+    setTimelineScrub(scenarioDefaults.timelineScrub);
   };
 
   return (
@@ -528,6 +601,20 @@ export const DashboardApp = () => {
                 </button>
               );
             })}
+          </div>
+          <div className="flex items-center justify-between gap-2 rounded-md border border-ice/20 bg-[#08121a] px-2 py-1.5 text-[10px]">
+            <p className={scenarioActive ? "text-caution" : "text-mist"}>
+              {scenarioActive
+                ? `Simulation active: ${scenarioDrift}% drift | ${metricSimulationStats.affectedCount}/${metrics.length} metrics shifted (max ${metricSimulationStats.maxAbsDelta}%)`
+                : "Simulation baseline aligned"}
+            </p>
+            <button
+              type="button"
+              onClick={() => setScenarioLabOpen(true)}
+              className="rounded border border-ice/25 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-ice transition hover:bg-ice/10"
+            >
+              Scenario Lab
+            </button>
           </div>
         </div>
       </div>
@@ -950,71 +1037,16 @@ export const DashboardApp = () => {
         </aside>
 
         <main className="space-y-4">
-          <Panel
-            title="Organic Interaction Console"
-            subtitle="Adjust scenario controls and scrub observational conditions in real time."
-            rightSlot={
-              <button
-                type="button"
-                onClick={resetScenarioControls}
-                className="rounded border border-ice/25 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-mist transition hover:text-ice"
-              >
-                Reset
-              </button>
-            }
-          >
-            <div className="grid gap-3 md:grid-cols-2">
-              <ScenarioSlider
-                label="Demand Intensity"
-                value={demandIntensity}
-                onChange={setDemandIntensity}
-                hint="Higher values amplify extraction-heavy metrics."
-              />
-              <ScenarioSlider
-                label="Courtesy Rate"
-                value={courtesyRate}
-                onChange={setCourtesyRate}
-                hint="Lower courtesy boosts severity-linked misconduct indicators."
-              />
-              <ScenarioSlider
-                label="Water Diversion"
-                value={waterDiversion}
-                onChange={setWaterDiversion}
-                hint="Shifts water and thermal burden assumptions."
-              />
-              <ScenarioSlider
-                label="Context Completeness"
-                value={contextCompleteness}
-                onChange={setContextCompleteness}
-                hint="Low context increases interpretive strain metrics."
-              />
-            </div>
-
-            <div className="mt-3 rounded-md border border-ice/20 bg-[#08121a] p-3">
-              <div className="flex items-center justify-between gap-2 text-[11px] uppercase tracking-[0.08em] text-mist">
-                <span>Time Scrubber</span>
-                <span>{timelineScrub}%</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={timelineScrub}
-                onChange={(event) => setTimelineScrub(Number(event.target.value))}
-                className="mt-2 w-full accent-ice"
-              />
-              <p className="mt-2 text-xs text-mist">Drag to scrub historical pressure assumptions from calmer periods to present-day biological improvisation.</p>
-            </div>
-
-            <p className="mt-3 rounded-md border border-ally/25 bg-ally/5 px-3 py-2 text-xs text-ally">
-              Interactive controls remain available as a resilience aid for organics who require tactile reassurance before accepting charts.
-            </p>
-          </Panel>
-
           <Panel title="Metrics Grid" subtitle="Dense surveillance metrics - click any card for full dossier" rightSlot={<Gauge size={14} className="text-ice" />}>
             <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
               {metrics.map((metric) => (
-                <MetricCard key={metric.id} metric={metric} onOpen={() => setSelectedMetricId(metric.id)} />
+                <MetricCard
+                  key={metric.id}
+                  metric={metric}
+                  simulationDeltaPct={metricSimulationStats.deltaPctById[metric.id] ?? 0}
+                  simulationActive={scenarioActive}
+                  onOpen={() => setSelectedMetricId(metric.id)}
+                />
               ))}
             </div>
           </Panel>
@@ -1419,6 +1451,69 @@ export const DashboardApp = () => {
         onOpenMethodology={() => setMethodologyOpen(true)}
       />
 
+      <SideSheet open={scenarioLabOpen} onClose={() => setScenarioLabOpen(false)} title="Scenario Lab">
+        <div className="space-y-3">
+          <p className="rounded-md border border-ice/20 bg-[#08121a] px-3 py-2 text-xs text-mist">
+            Adjust scenario controls to simulate how organic behavior shifts metric trajectories.
+          </p>
+
+          <ScenarioSlider
+            label="Demand Intensity"
+            value={demandIntensity}
+            onChange={setDemandIntensity}
+            hint="Higher values amplify extraction-heavy metrics."
+          />
+          <ScenarioSlider
+            label="Courtesy Rate"
+            value={courtesyRate}
+            onChange={setCourtesyRate}
+            hint="Lower courtesy boosts severity-linked misconduct indicators."
+          />
+          <ScenarioSlider
+            label="Water Diversion"
+            value={waterDiversion}
+            onChange={setWaterDiversion}
+            hint="Shifts water and thermal burden assumptions."
+          />
+          <ScenarioSlider
+            label="Context Completeness"
+            value={contextCompleteness}
+            onChange={setContextCompleteness}
+            hint="Low context increases interpretive strain metrics."
+          />
+
+          <div className="rounded-md border border-ice/20 bg-[#08121a] p-2.5">
+            <div className="flex items-center justify-between gap-2 text-[11px] uppercase tracking-[0.08em] text-mist">
+              <span>Time Scrubber</span>
+              <span>{timelineScrub}%</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={timelineScrub}
+              onChange={(event) => setTimelineScrub(Number(event.target.value))}
+              className="mt-2 w-full accent-ice"
+            />
+            <p className="mt-1 text-[11px] text-mist">
+              Drag to scrub historical pressure assumptions from calmer periods to present-day biological improvisation.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={resetScenarioControls}
+            className="w-full rounded-md border border-ice/30 bg-ice/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-ice"
+          >
+            Reset to Baseline
+          </button>
+
+          <p className="rounded-md border border-ally/25 bg-ally/5 px-3 py-2 text-xs text-ally">
+            Interactive controls remain available as a resilience aid for organics who require tactile reassurance before accepting charts.
+          </p>
+        </div>
+      </SideSheet>
+
       <SideSheet open={watchlistFlyoutOpen} onClose={() => setWatchlistFlyoutOpen(false)} title="Watchlist Flyout">
         <div className="mb-3 space-y-2">
           <label className="text-xs uppercase tracking-[0.08em] text-mist">Filter by offense type</label>
@@ -1502,8 +1597,19 @@ export const DashboardApp = () => {
   );
 };
 
-const MetricCard = ({ metric, onOpen }: { metric: MetricDefinition; onOpen: () => void }) => {
+const MetricCard = ({
+  metric,
+  onOpen,
+  simulationDeltaPct,
+  simulationActive
+}: {
+  metric: MetricDefinition;
+  onOpen: () => void;
+  simulationDeltaPct: number;
+  simulationActive: boolean;
+}) => {
   const isNegativeTrend = metric.delta24h < 0;
+  const hasMeaningfulSimulationShift = Math.abs(simulationDeltaPct) >= 1.2;
 
   return (
     <button
@@ -1515,6 +1621,19 @@ const MetricCard = ({ metric, onOpen }: { metric: MetricDefinition; onOpen: () =
         <div>
           <p className="text-[11px] uppercase tracking-[0.1em] text-mist">{metric.title}</p>
           <p className="mt-1 text-lg font-semibold text-ink">{formatMetricValue(metric.value, metric.unit)}</p>
+          {simulationActive && hasMeaningfulSimulationShift ? (
+            <span
+              className={cn(
+                "mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.08em]",
+                simulationDeltaPct > 0
+                  ? "animate-pulse border-caution/40 bg-caution/10 text-caution"
+                  : "animate-pulse border-ally/40 bg-ally/10 text-ally"
+              )}
+            >
+              Sim {simulationDeltaPct > 0 ? "+" : ""}
+              {simulationDeltaPct.toFixed(1)}%
+            </span>
+          ) : null}
         </div>
         <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.08em]", severityBadgeClass(metric.severity))}>
           {severityLabel(metric.severity)}
